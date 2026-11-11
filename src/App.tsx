@@ -2,11 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   Coins,
+  Download,
   LayoutDashboard,
   PlusCircle,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
+  X,
 } from 'lucide-react';
 import { BudgetsAndLoansView } from './components/BudgetsAndLoansView';
 import { DashboardView } from './components/DashboardView';
@@ -43,6 +46,15 @@ import {
 
 type ActiveTab = 'DASHBOARD' | 'BUDGETS_LOANS' | 'LEDGER_SETUP';
 
+interface BeforeInstallPromptEvent extends Event {
+  readonly platforms: string[];
+  readonly userChoice: Promise<{
+    outcome: 'accepted' | 'dismissed';
+    platform: string;
+  }>;
+  prompt(): Promise<void>;
+}
+
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateV2>(() => loadAppStateFromStorage());
   const [activeTab, setActiveTab] = useState<ActiveTab>('DASHBOARD');
@@ -54,12 +66,44 @@ export const App: React.FC = () => {
     useState<ExpenseTargetType>('SHARED_BUDGET');
   const [quickBudgetId, setQuickBudgetId] = useState<string | undefined>(undefined);
 
+  // PWA Install Prompt State
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      Boolean((window.navigator as unknown as { standalone?: boolean }).standalone)
+    );
+  });
+  const [showInstallGuideModal, setShowInstallGuideModal] = useState<boolean>(false);
+
   // Toast Feedback State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
     saveAppStateToStorage(state);
   }, [state]);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredInstallPrompt(e as BeforeInstallPromptEvent);
+    };
+    const handleAppInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setIsStandalone(true);
+      setShowInstallGuideModal(false);
+      showToast('FlowPilot erfolgreich als App installiert!');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -74,6 +118,18 @@ export const App: React.FC = () => {
     }, 3200);
     return () => window.clearTimeout(timer);
   }, [toastMessage]);
+
+  const handleInstallPwaClick = async () => {
+    if (deferredInstallPrompt) {
+      await deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        setDeferredInstallPrompt(null);
+      }
+    } else {
+      setShowInstallGuideModal(true);
+    }
+  };
 
   const projection = useMemo(() => projectDashboard(state), [state]);
   const whatsAppReportText = useMemo(() => generateWhatsAppReport(state), [state]);
@@ -279,68 +335,87 @@ export const App: React.FC = () => {
     <div className="min-h-screen bg-[#090d16] text-slate-100">
       {/* Top App Bar */}
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090d16]/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-black text-sm">
+        <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-3 gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-black text-sm">
               FP
             </div>
-            <div>
-              <h1 className="text-sm font-extrabold tracking-tight text-slate-100">
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-extrabold tracking-tight text-slate-100">
                 FlowPilot Partner A
               </h1>
               <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-                <span>
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                <span className="truncate">
                   {projection.liquidity.invariants.valid
-                    ? 'Invarianten 1 & 2 verifiziert • Offline PWA'
+                    ? 'Invarianten 1 & 2 OK • Offline PWA'
                     : 'Invarianz-Prüfung aktiv'}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Navigations-Tabs */}
-          <nav aria-label="Hauptnavigation" className="flex items-center gap-1 rounded-2xl bg-slate-900 p-1 border border-slate-800">
-            <button
-              id="nav-tab-dashboard"
-              type="button"
-              onClick={() => setActiveTab('DASHBOARD')}
-              className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
-                activeTab === 'DASHBOARD'
-                  ? 'bg-emerald-500 text-slate-950'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* PWA Install Button auf Mobilgeräten (solange nicht bereits als Standalone-App geöffnet) */}
+            {!isStandalone && (
+              <button
+                id="btn-install-pwa"
+                type="button"
+                onClick={handleInstallPwaClick}
+                title="Als App auf dem Smartphone installieren"
+                className="flex items-center gap-1 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25 transition"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="hidden xs:inline sm:inline">Installieren</span>
+              </button>
+            )}
+
+            {/* Navigations-Tabs */}
+            <nav
+              aria-label="Hauptnavigation"
+              className="flex items-center gap-1 rounded-2xl bg-slate-900 p-1 border border-slate-800"
             >
-              <LayoutDashboard className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Dashboard</span>
-            </button>
-            <button
-              id="nav-tab-budgets-loans"
-              type="button"
-              onClick={() => setActiveTab('BUDGETS_LOANS')}
-              className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
-                activeTab === 'BUDGETS_LOANS'
-                  ? 'bg-emerald-500 text-slate-950'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Budgets & Raten</span>
-            </button>
-            <button
-              id="nav-tab-ledger-setup"
-              type="button"
-              onClick={() => setActiveTab('LEDGER_SETUP')}
-              className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
-                activeTab === 'LEDGER_SETUP'
-                  ? 'bg-emerald-500 text-slate-950'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Setup & Export</span>
-            </button>
-          </nav>
+              <button
+                id="nav-tab-dashboard"
+                type="button"
+                onClick={() => setActiveTab('DASHBOARD')}
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
+                  activeTab === 'DASHBOARD'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <LayoutDashboard className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Dashboard</span>
+              </button>
+              <button
+                id="nav-tab-budgets-loans"
+                type="button"
+                onClick={() => setActiveTab('BUDGETS_LOANS')}
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
+                  activeTab === 'BUDGETS_LOANS'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Budgets & Raten</span>
+              </button>
+              <button
+                id="nav-tab-ledger-setup"
+                type="button"
+                onClick={() => setActiveTab('LEDGER_SETUP')}
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition ${
+                  activeTab === 'LEDGER_SETUP'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Setup & Export</span>
+              </button>
+            </nav>
+          </div>
         </div>
       </header>
 
@@ -353,6 +428,72 @@ export const App: React.FC = () => {
         >
           <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
           <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* PWA Installations-Anleitung Modal (falls Browser keinen direkten Prompt anbietet) */}
+      {showInstallGuideModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-[#101726] p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-400">
+                  <Smartphone className="h-5 w-5" />
+                </div>
+                <h2 className="text-base font-bold text-slate-100">
+                  Auf Google Pixel / Smartphone installieren
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInstallGuideModal(false)}
+                className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-300">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3.5 space-y-1.5">
+                <div className="font-bold text-emerald-300">
+                  Android / Google Pixel (Chrome):
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-slate-300">
+                  <li>
+                    Tippe oben rechts in Chrome auf das <strong>Drei-Punkte-Menü (⋮)</strong>.
+                  </li>
+                  <li>
+                    Wähle <strong>„App installieren“</strong> oder{' '}
+                    <strong>„Zum Startbildschirm hinzufügen“</strong>.
+                  </li>
+                  <li>
+                    Bestätige mit <strong>Installieren</strong> – FlowPilot startet danach als
+                    eigenständige Vollbild-App (offlinefähig via Service Worker).
+                  </li>
+                </ol>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3.5 space-y-1.5">
+                <div className="font-bold text-sky-300">iOS (Safari):</div>
+                <p>
+                  Tippe unten auf das <strong>Teilen-Symbol</strong> und wähle{' '}
+                  <strong>„Zum Home-Bildschirm“</strong>.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowInstallGuideModal(false)}
+              className="w-full rounded-2xl bg-emerald-500 py-3 text-xs font-extrabold text-slate-950"
+            >
+              Verstanden
+            </button>
+          </div>
         </div>
       )}
 
