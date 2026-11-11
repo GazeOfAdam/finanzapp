@@ -6,7 +6,7 @@
   "description": "Offline-first Progressive Web App zur Budget-, Cashflow- und Pflichtausgaben-Steuerung für Partner A (Google Pixel PWA)",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && rm -rf docs && cp -r dist docs && touch docs/.nojekyll",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
