@@ -1,14 +1,18 @@
 import { formatCentsToEuro } from './finance';
 import {
-  AppStateV2,
-  createDefaultAppStateV2,
-  migrateStateToV2,
+  AppStateV3,
+  createDefaultAppStateV3,
+  getTransactionDateISO,
+  migrateStateToV3,
   PaymentMethod,
+  SPECIAL_TASCHENGELD_BUDGET_ID,
   Transaction,
 } from './model';
 
+export const STORAGE_KEY_V3 = 'flowpilot_partner_a_state_v3';
 export const STORAGE_KEY_V2 = 'flowpilot_partner_a_state_v2';
 export const LEGACY_STORAGE_KEYS = [
+  STORAGE_KEY_V2,
   'flowpilot_partner_a_state_v1',
   'flowpilot_state_v1',
   'flowpilot_state',
@@ -16,27 +20,28 @@ export const LEGACY_STORAGE_KEYS = [
 
 /**
  * Lädt den Anwendungszustand aus localStorage.
- * Führt bei Vorhandensein eines V1-Schemas automatisch eine verlustfreie Migration auf V2 durch.
+ * Führt bei Vorhandensein eines V1- oder V2-Schemas automatisch eine verlustfreie Migration auf V3 durch.
  */
-export function loadAppStateFromStorage(storage: Storage | undefined = getBrowserStorage()): AppStateV2 {
+export function loadAppStateFromStorage(
+  storage: Storage | undefined = getBrowserStorage()
+): AppStateV3 {
   if (!storage) {
-    return createDefaultAppStateV2();
+    return createDefaultAppStateV3();
   }
 
   try {
-    const rawV2 = storage.getItem(STORAGE_KEY_V2);
-    if (rawV2) {
-      const parsed = JSON.parse(rawV2) as unknown;
-      const migrated = migrateStateToV2(parsed);
-      return migrated;
+    const rawV3 = storage.getItem(STORAGE_KEY_V3);
+    if (rawV3) {
+      const parsed = JSON.parse(rawV3) as unknown;
+      return migrateStateToV3(parsed);
     }
 
-    // Prüfe auf Legacy V1 Keys und migriere automatisch
+    // Prüfe auf Legacy V2 / V1 Keys und migriere automatisch
     for (const legacyKey of LEGACY_STORAGE_KEYS) {
       const rawLegacy = storage.getItem(legacyKey);
       if (rawLegacy) {
         const parsedLegacy = JSON.parse(rawLegacy) as unknown;
-        const migratedState = migrateStateToV2(parsedLegacy);
+        const migratedState = migrateStateToV3(parsedLegacy);
         saveAppStateToStorage(migratedState, storage);
         return migratedState;
       }
@@ -45,16 +50,16 @@ export function loadAppStateFromStorage(storage: Storage | undefined = getBrowse
     console.error('[FlowPilot Storage] Fehler beim Laden/Migrieren aus localStorage:', err);
   }
 
-  const initial = createDefaultAppStateV2();
+  const initial = createDefaultAppStateV3();
   saveAppStateToStorage(initial, storage);
   return initial;
 }
 
 /**
- * Atomare Persistenz des AppStateV2 in localStorage.
+ * Atomare Persistenz des AppStateV3 in localStorage.
  */
 export function saveAppStateToStorage(
-  state: AppStateV2,
+  state: AppStateV3,
   storage: Storage | undefined = getBrowserStorage()
 ): boolean {
   if (!storage) {
@@ -62,9 +67,9 @@ export function saveAppStateToStorage(
   }
 
   try {
-    const normalized = migrateStateToV2(state);
+    const normalized = migrateStateToV3(state);
     const serialized = JSON.stringify(normalized);
-    storage.setItem(STORAGE_KEY_V2, serialized);
+    storage.setItem(STORAGE_KEY_V3, serialized);
     return true;
   } catch (err) {
     console.error('[FlowPilot Storage] Fehler beim Speichern in localStorage:', err);
@@ -73,12 +78,12 @@ export function saveAppStateToStorage(
 }
 
 /**
- * Setzt den Zustand in localStorage auf die Werkseinstellungen (V2 Defaults) zurück.
+ * Setzt den Zustand in localStorage auf die Werkseinstellungen (V3 Defaults) zurück.
  */
 export function resetAppStateInStorage(
   storage: Storage | undefined = getBrowserStorage()
-): AppStateV2 {
-  const defaults = createDefaultAppStateV2();
+): AppStateV3 {
+  const defaults = createDefaultAppStateV3();
   saveAppStateToStorage(defaults, storage);
   return defaults;
 }
@@ -117,12 +122,8 @@ function sanitizeCsvCell(value: string): string {
   return cleaned;
 }
 
-function formatTransactionRow(tx: Transaction, state: AppStateV2): string {
-  const dateObj = new Date(tx.timestamp);
-  const isoDate = Number.isNaN(dateObj.getTime())
-    ? '1970-01-01'
-    : dateObj.toISOString().slice(0, 10);
-
+function formatTransactionRow(tx: Transaction, state: AppStateV3): string {
+  const isoDate = getTransactionDateISO(tx);
   const amountEur = formatCentsToEuro(tx.cents, false);
 
   let typLabel = '';
@@ -135,7 +136,7 @@ function formatTransactionRow(tx: Transaction, state: AppStateV2): string {
       typLabel = 'INCOME_SALARY';
       kategorieLabel = 'Gehalt';
       zahlungswegLabel = 'Privatkonto Giro A';
-      zuordnungLabel = 'Pflichtdeckung Partner A';
+      zuordnungLabel = 'Pflichtdeckung & Taschengeld A';
       break;
     }
     case 'INCOME_TIP': {
@@ -154,26 +155,26 @@ function formatTransactionRow(tx: Transaction, state: AppStateV2): string {
     }
     case 'EXPENSE_PRIVATE_A': {
       typLabel = 'EXPENSE_PRIVATE_A';
-      kategorieLabel = tx.category || 'Privatausgabe';
+      kategorieLabel = tx.category || 'Privat A';
       zahlungswegLabel = 'Bargeld / Privat A';
       zuordnungLabel = 'Privat Partner A (100%)';
       break;
     }
     case 'EXPENSE_SHARED': {
-      const budget = state.budgets.find((b) => b.id === tx.budgetId);
       typLabel = 'EXPENSE_SHARED';
-      kategorieLabel = budget ? budget.name : tx.budgetId;
       zahlungswegLabel = formatPaymentMethodLabel(tx.paymentMethod);
-      zuordnungLabel = tx.markedForCashClearing
-        ? 'Gemeinschaftlich 50:50 (Barkauf-Verrechnung)'
-        : 'Gemeinschaftlich 50:50';
-      break;
-    }
-    case 'EXPENSE_BUFFER': {
-      typLabel = 'EXPENSE_BUFFER';
-      kategorieLabel = 'Gemeinschaftlich: Puffer';
-      zahlungswegLabel = formatPaymentMethodLabel(tx.paymentMethod);
-      zuordnungLabel = 'Dynamischer 2x-Puffer (50% Taschengeld A)';
+      if (tx.budgetId === SPECIAL_TASCHENGELD_BUDGET_ID) {
+        kategorieLabel = 'Gemeinsam: Taschengeld (50:50)';
+        zuordnungLabel = tx.markedForCashClearing
+          ? 'Taschengeld 50:50 (Barkauf-Verrechnung)'
+          : 'Taschengeld 50:50';
+      } else {
+        const budget = state.budgets.find((b) => b.id === tx.budgetId);
+        kategorieLabel = budget ? `Alltag: ${budget.name}` : tx.budgetId;
+        zuordnungLabel = tx.markedForCashClearing
+          ? 'Gemeinschaftlich 50:50 (Barkauf-Verrechnung)'
+          : 'Gemeinschaftlich 50:50';
+      }
       break;
     }
   }
@@ -195,9 +196,12 @@ function formatTransactionRow(tx: Transaction, state: AppStateV2): string {
  * Erzeugt den CSV-Inhalt inklusive UTF-8-BOM (\uFEFF) und Semikolon-Trennung:
  * Header: Datum;Typ;Kategorie;Betrag_EUR;Zahlungsweg;Zuordnung;Notiz
  */
-export function buildTransactionsCsvWithBom(state: AppStateV2): string {
+export function buildTransactionsCsvWithBom(state: AppStateV3): string {
   const header = 'Datum;Typ;Kategorie;Betrag_EUR;Zahlungsweg;Zuordnung;Notiz';
-  const sortedTransactions = [...state.transactions].sort((a, b) => b.timestamp - a.timestamp);
+  const sortedTransactions = [...state.transactions].sort((a, b) => {
+    const dateCmp = getTransactionDateISO(b).localeCompare(getTransactionDateISO(a));
+    return dateCmp !== 0 ? dateCmp : b.timestamp - a.timestamp;
+  });
   const rows = sortedTransactions.map((tx) => formatTransactionRow(tx, state));
   return `\uFEFF${[header, ...rows].join('\r\n')}`;
 }
@@ -205,7 +209,7 @@ export function buildTransactionsCsvWithBom(state: AppStateV2): string {
 /**
  * Löst den clientseitigen Download der Transaktionen als CSV-Datei via Blob aus.
  */
-export function downloadTransactionsCsv(state: AppStateV2, filename?: string): void {
+export function downloadTransactionsCsv(state: AppStateV3, filename?: string): void {
   const csvContent = buildTransactionsCsvWithBom(state);
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const dateStr = new Date().toISOString().slice(0, 10);
@@ -213,28 +217,28 @@ export function downloadTransactionsCsv(state: AppStateV2, filename?: string): v
 }
 
 /**
- * Exportiert den gesamten AppStateV2 als formatierten JSON-String.
+ * Exportiert den gesamten AppStateV3 als formatierten JSON-String.
  */
-export function buildJsonBackupString(state: AppStateV2): string {
+export function buildJsonBackupString(state: AppStateV3): string {
   return JSON.stringify(state, null, 2);
 }
 
 /**
  * Löst den clientseitigen Download eines vollständigen JSON-Backups aus.
  */
-export function downloadJsonBackup(state: AppStateV2, filename?: string): void {
+export function downloadJsonBackup(state: AppStateV3, filename?: string): void {
   const jsonContent = buildJsonBackupString(state);
   const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
   const dateStr = new Date().toISOString().slice(0, 10);
-  triggerBrowserDownload(blob, filename ?? `flowpilot-backup-v2-${dateStr}.json`);
+  triggerBrowserDownload(blob, filename ?? `flowpilot-backup-v3-${dateStr}.json`);
 }
 
 /**
- * Importiert und migriert einen JSON-Backup-String (V1 oder V2) sicher nach AppStateV2.
+ * Importiert und migriert einen JSON-Backup-String (V1, V2 oder V3) sicher nach AppStateV3.
  */
-export function parseAndMigrateJsonBackup(jsonText: string): AppStateV2 {
+export function parseAndMigrateJsonBackup(jsonText: string): AppStateV3 {
   const parsed = JSON.parse(jsonText) as unknown;
-  return migrateStateToV2(parsed);
+  return migrateStateToV3(parsed);
 }
 
 function triggerBrowserDownload(blob: Blob, filename: string): void {
